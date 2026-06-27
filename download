@@ -1,0 +1,227 @@
+import { useState, useRef, useCallback } from 'react'
+import WaveVisualizer from './components/WaveVisualizer'
+import { extractBeat, audioBufferToWav, fetchAudioUrl, fileNameFromUrl } from './utils/audio'
+import { useProgress } from './hooks/useProgress'
+import styles from './App.module.css'
+
+const STAGE = {
+  IDLE:       'idle',
+  PROCESSING: 'processing',
+  DONE:       'done',
+  ERROR:      'error',
+}
+
+const STAGE_LABELS = {
+  fetching:    'Fetching audio from URL...',
+  downloading: 'Downloading audio...',
+  analyzing:   'Detecting vocals and beats...',
+  isolating:   'Isolating the instrumental...',
+}
+
+export default function App() {
+  const [stage, setStage]         = useState(STAGE.IDLE)
+  const [stageLabel, setStageLabel] = useState('')
+  const [error, setError]         = useState('')
+  const [downloadUrl, setDownloadUrl] = useState(null)
+  const [downloadName, setDownloadName] = useState('')
+  const urlInputRef               = useRef(null)
+  const { progress, animate, reset: resetProgress } = useProgress()
+
+  const showError = useCallback((msg) => {
+    setError(msg)
+    setStage(STAGE.ERROR)
+  }, [])
+
+  const reset = useCallback(() => {
+    if (downloadUrl) URL.revokeObjectURL(downloadUrl)
+    setDownloadUrl(null)
+    setDownloadName('')
+    setError('')
+    resetProgress()
+    setStage(STAGE.IDLE)
+    setTimeout(() => urlInputRef.current?.focus(), 100)
+  }, [downloadUrl, resetProgress])
+
+  const run = useCallback(async () => {
+    const url = urlInputRef.current?.value?.trim()
+    if (!url) { urlInputRef.current?.focus(); return }
+
+    if (!url.startsWith('http')) {
+      showError('Paste the full URL starting with https://')
+      return
+    }
+
+    setStage(STAGE.PROCESSING)
+    setError('')
+
+    try {
+      // 1. Get audio stream URL from cobalt.tools
+      setStageLabel(STAGE_LABELS.fetching)
+      animate(0, 20, 1000, null)
+      const audioStreamUrl = await fetchAudioUrl(url)
+
+      // 2. Download the audio
+      setStageLabel(STAGE_LABELS.downloading)
+      animate(20, 50, 3000, null)
+      const audioRes = await fetch(audioStreamUrl)
+      if (!audioRes.ok) throw new Error('audio_fetch_failed')
+      const audioArrayBuffer = await audioRes.arrayBuffer()
+      if (audioArrayBuffer.byteLength < 1000) throw new Error('audio_too_small')
+
+      // 3. Decode
+      setStageLabel(STAGE_LABELS.analyzing)
+      animate(50, 70, 1000, null)
+      const AudioCtx = window.AudioContext || window.webkitAudioContext
+      const ctx = new AudioCtx()
+      const decoded = await ctx.decodeAudioData(audioArrayBuffer)
+      await ctx.close()
+
+      // 4. Filter and extract beat
+      setStageLabel(STAGE_LABELS.isolating)
+      animate(70, 92, 2500, null)
+      const beatBuffer = await extractBeat(decoded)
+      const wavData    = audioBufferToWav(beatBuffer)
+
+      const blob    = new Blob([wavData], { type: 'audio/wav' })
+      const blobUrl = URL.createObjectURL(blob)
+      const fname   = fileNameFromUrl(url)
+
+      animate(92, 100, 400, () => {
+        setDownloadUrl(blobUrl)
+        setDownloadName(`${fname}_beat.wav`)
+        setStage(STAGE.DONE)
+      })
+
+    } catch (err) {
+      console.error(err)
+      const msg = err.message
+
+      if (msg.includes('cobalt_api_error')) {
+        showError('The cobalt.tools API is temporarily unavailable. Try again in a moment.')
+      } else if (msg.includes('no_audio_url')) {
+        showError('Could not extract audio from this URL. Make sure it\'s a public YouTube Shorts or Instagram Reel link.')
+      } else if (msg.includes('Failed to fetch') || msg.includes('NetworkError')) {
+        showError('CORS_ERROR')
+      } else {
+        showError('Something went wrong. Try a different URL or check that the video is publicly accessible.')
+      }
+    }
+  }, [animate, showError])
+
+  return (
+    <div className={styles.page}>
+
+      <header className={styles.header}>
+        <div className={styles.logo}>
+          <div className={styles.logoIcon}>🎵</div>
+          <span className={styles.logoText}>BeatLift</span>
+        </div>
+        <p className={styles.tagline}>Paste a song URL. Get the beat as a ringtone-ready file.</p>
+      </header>
+
+      <main className={styles.card}>
+
+        <WaveVisualizer state={stage} />
+
+        {/* URL input — always mounted, hidden during processing */}
+        <div className={stage === STAGE.IDLE ? '' : styles.hidden}>
+          <label className={styles.inputLabel} htmlFor="urlInput">
+            Paste a YouTube Shorts or Instagram Reel URL
+          </label>
+          <div className={styles.urlRow}>
+            <input
+              id="urlInput"
+              ref={urlInputRef}
+              type="url"
+              className={styles.urlInput}
+              placeholder="https://youtube.com/shorts/..."
+              autoComplete="off"
+              spellCheck="false"
+              translate="no"
+              autoCorrect="off"
+              autoCapitalize="off"
+              onKeyDown={e => e.key === 'Enter' && run()}
+            />
+            <button className={styles.btnExtract} onClick={run}>
+              Extract
+            </button>
+          </div>
+          <div className={styles.platformHints}>
+            <span>▶ YouTube Shorts</span>
+            <span>📸 Instagram Reels</span>
+            <span>🎵 TikTok</span>
+          </div>
+        </div>
+
+        {/* Processing */}
+        {stage === STAGE.PROCESSING && (
+          <div className={styles.progressSection}>
+            <p className={styles.stageLabel}>{stageLabel}</p>
+            <div className={styles.progressTrack}>
+              <div className={styles.progressFill} style={{ width: `${progress}%` }} />
+            </div>
+            <p className={styles.progressPct}>{progress}%</p>
+          </div>
+        )}
+
+        {/* Done */}
+        {stage === STAGE.DONE && (
+          <div className={styles.doneSection}>
+            <div className={styles.successBadge}>✓ Beat extracted</div>
+            <p className={styles.doneSub}>Vocals filtered out. Instrumental preserved.</p>
+            <a
+              className={styles.btnDownload}
+              href={downloadUrl}
+              download={downloadName}
+            >
+              ⬇ Download Beat (.wav)
+            </a>
+            <button className={styles.btnReset} onClick={reset}>
+              Try another URL
+            </button>
+            <p className={styles.ringtoneTip}>
+              <strong>For ringtones:</strong> the .wav works directly on most Android phones — transfer and set it.
+              On iPhone, open in GarageBand, trim to 30s, and export as ringtone.
+            </p>
+          </div>
+        )}
+
+        {/* Error */}
+        {stage === STAGE.ERROR && (
+          <div className={styles.errorSection}>
+            {error === 'CORS_ERROR' ? (
+              <div className={styles.errorBox}>
+                <p className={styles.errorTitle}>⚠ CORS restriction</p>
+                <p>Browsers block API calls from local files. This app needs to run from a real domain.</p>
+                <p className={styles.errorFix}>
+                  Deploy to Vercel (see README) and it works instantly. Or install the{' '}
+                  <a
+                    href="https://chrome.google.com/webstore/detail/allow-cors-access-control/lhobafahddgcelffkeicbaginigeejlf"
+                    target="_blank"
+                    rel="noreferrer"
+                    className={styles.errorLink}
+                  >
+                    Allow CORS extension
+                  </a>{' '}
+                  in Chrome for quick local testing.
+                </p>
+              </div>
+            ) : (
+              <div className={styles.errorBox}>
+                <p className={styles.errorTitle}>⚠ Something went wrong</p>
+                <p>{error}</p>
+              </div>
+            )}
+            <button className={styles.btnReset} onClick={reset}>Try again</button>
+          </div>
+        )}
+
+      </main>
+
+      <footer className={styles.footer}>
+        Audio fetched via <a href="https://cobalt.tools" target="_blank" rel="noreferrer" className={styles.footerLink}>cobalt.tools</a> — open-source media API. Nothing is stored or tracked.
+      </footer>
+
+    </div>
+  )
+}

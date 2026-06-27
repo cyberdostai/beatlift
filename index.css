@@ -1,0 +1,76 @@
+import { useEffect, useRef } from 'react'
+import styles from './WaveVisualizer.module.css'
+
+const BAR_COUNT = 28
+
+export default function WaveVisualizer({ state }) {
+  const barsRef = useRef([])
+  const tickRef = useRef(0)
+  const intervalRef = useRef(null)
+
+  useEffect(() => {
+    clearInterval(intervalRef.current)
+
+    if (state === 'idle') {
+      barsRef.current.forEach((b, i) => {
+        if (!b) return
+        b.style.height = (10 + Math.sin(i * 0.8) * 6) + 'px'
+        b.style.opacity = '0.3'
+        b.style.background = 'var(--indigo)'
+      })
+      return
+    }
+
+    if (state === 'processing') {
+      intervalRef.current = setInterval(() => {
+        tickRef.current++
+        barsRef.current.forEach((b, i) => {
+          if (!b) return
+          b.style.height = (8 + Math.abs(Math.sin(tickRef.current / 3 + i * 0.6)) * 28) + 'px'
+          b.style.opacity = '0.85'
+          b.style.background = 'var(--indigo)'
+        })
+      }, 80)
+      return
+    }
+
+    if (state === 'done') {
+      intervalRef.current = setInterval(() => {
+        tickRef.current++
+        barsRef.current.forEach((b, i) => {
+          if (!b) return
+          b.style.height = (6 + Math.abs(Math.sin(tickRef.current / 6 + i * 0.5)) * 20) + 'px'
+          b.style.opacity = '0.55'
+          b.style.background = 'var(--green)'
+        })
+      }, 120)
+      return
+    }
+
+    if (state === 'error') {
+      barsRef.current.forEach((b, i) => {
+        if (!b) return
+        b.style.height = (6 + Math.sin(i * 1.2) * 4) + 'px'
+        b.style.opacity = '0.25'
+        b.style.background = 'var(--red)'
+      })
+    }
+
+    return () => clearInterval(intervalRef.current)
+  }, [state])
+
+  return (
+    <div className={styles.container}>
+      <div className={styles.wave}>
+        {Array.from({ length: BAR_COUNT }).map((_, i) => (
+          <div
+            key={i}
+            className={styles.bar}
+            ref={el => barsRef.current[i] = el}
+            style={{ height: (10 + Math.sin(i * 0.8) * 6) + 'px' }}
+          />
+        ))}
+      </div>
+    </div>
+  )
+}

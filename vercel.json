@@ -1,0 +1,159 @@
+/**
+ * Runs a vocal-reduction filter chain on an AudioBuffer
+ * and returns a new AudioBuffer with the beat/instrumental isolated.
+ */
+export async function extractBeat(audioBuffer) {
+  const offCtx = new OfflineAudioContext(
+    audioBuffer.numberOfChannels,
+    audioBuffer.length,
+    audioBuffer.sampleRate
+  )
+
+  const source = offCtx.createBufferSource()
+  source.buffer = audioBuffer
+
+  // High-pass: cut below 180Hz (rumble)
+  const hp = offCtx.createBiquadFilter()
+  hp.type = 'highpass'
+  hp.frequency.value = 180
+  hp.Q.value = 0.8
+
+  // Low-pass: cut above 14kHz (air/hiss)
+  const lp = offCtx.createBiquadFilter()
+  lp.type = 'lowpass'
+  lp.frequency.value = 14000
+  lp.Q.value = 0.7
+
+  // Notch 1: vocal presence at 3kHz
+  const n1 = offCtx.createBiquadFilter()
+  n1.type = 'notch'
+  n1.frequency.value = 3000
+  n1.Q.value = 1.2
+
+  // Notch 2: vocal brightness at 4.5kHz
+  const n2 = offCtx.createBiquadFilter()
+  n2.type = 'notch'
+  n2.frequency.value = 4500
+  n2.Q.value = 1.0
+
+  // Mid cut: vocal body at 1.8kHz
+  const mc = offCtx.createBiquadFilter()
+  mc.type = 'peaking'
+  mc.frequency.value = 1800
+  mc.gain.value = -9
+  mc.Q.value = 1.5
+
+  // Bass boost: reinforce kick/bass at 80Hz
+  const bb = offCtx.createBiquadFilter()
+  bb.type = 'peaking'
+  bb.frequency.value = 80
+  bb.gain.value = 4
+  bb.Q.value = 0.8
+
+  source.connect(hp)
+  hp.connect(lp)
+  lp.connect(n1)
+  n1.connect(n2)
+  n2.connect(mc)
+  mc.connect(bb)
+  bb.connect(offCtx.destination)
+
+  source.start(0)
+  return offCtx.startRendering()
+}
+
+/**
+ * Encodes an AudioBuffer to a WAV ArrayBuffer (16-bit PCM)
+ */
+export function audioBufferToWav(buffer) {
+  const numCh = buffer.numberOfChannels
+  const sr = buffer.sampleRate
+  const len = buffer.length
+  const dataSize = len * numCh * 2
+  const ab = new ArrayBuffer(44 + dataSize)
+  const v = new DataView(ab)
+
+  const ws = (o, s) => {
+    for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i))
+  }
+
+  ws(0, 'RIFF')
+  v.setUint32(4, 36 + dataSize, true)
+  ws(8, 'WAVE')
+  ws(12, 'fmt ')
+  v.setUint32(16, 16, true)
+  v.setUint16(20, 1, true)       // PCM
+  v.setUint16(22, numCh, true)
+  v.setUint32(24, sr, true)
+  v.setUint32(28, sr * numCh * 2, true)
+  v.setUint16(32, numCh * 2, true)
+  v.setUint16(34, 16, true)
+  ws(36, 'data')
+  v.setUint32(40, dataSize, true)
+
+  const channels = []
+  for (let c = 0; c < numCh; c++) channels.push(buffer.getChannelData(c))
+
+  let off = 44
+  for (let i = 0; i < len; i++) {
+    for (let c = 0; c < numCh; c++) {
+      v.setInt16(off, Math.max(-1, Math.min(1, channels[c][i])) * 0x7FFF, true)
+      off += 2
+    }
+  }
+
+  return ab
+}
+
+/**
+ * Calls cobalt.tools API to get a direct audio stream URL
+ * from a YouTube Shorts / Instagram Reel / TikTok URL
+ */
+export async function fetchAudioUrl(videoUrl) {
+  const res = await fetch('https://api.cobalt.tools/', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+    },
+    body: JSON.stringify({
+      url: videoUrl,
+      downloadMode: 'audio',
+      audioFormat: 'mp3',
+      quality: '128',
+    }),
+  })
+
+  if (!res.ok) {
+    throw new Error(`cobalt_api_error_${res.status}`)
+  }
+
+  const data = await res.json()
+
+  if (data.status === 'tunnel' || data.status === 'redirect') {
+    return data.url
+  }
+
+  if (data.status === 'picker') {
+    const audio = data.picker?.find(p => p.type === 'audio') || data.picker?.[0]
+    if (audio?.url) return audio.url
+  }
+
+  if (data.url) return data.url
+
+  throw new Error('no_audio_url')
+}
+
+/**
+ * Derive a clean filename from the source URL
+ */
+export function fileNameFromUrl(url) {
+  try {
+    const u = new URL(url)
+    const parts = u.pathname.split('/').filter(Boolean)
+    const raw = parts[parts.length - 1] || 'beat'
+    return raw.replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 40)
+  } catch {
+    return 'beat'
+  }
+}

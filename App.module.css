@@ -1,0 +1,26 @@
+import { useRef, useState } from 'react'
+
+export function useProgress() {
+  const [progress, setProgress] = useState(0)
+  const timerRef = useRef(null)
+
+  const animate = (from, to, duration, onDone) => {
+    clearInterval(timerRef.current)
+    const start = Date.now()
+    timerRef.current = setInterval(() => {
+      const p = Math.min(from + (to - from) * ((Date.now() - start) / duration), to)
+      setProgress(Math.round(p))
+      if (p >= to) {
+        clearInterval(timerRef.current)
+        onDone?.()
+      }
+    }, 40)
+  }
+
+  const reset = () => {
+    clearInterval(timerRef.current)
+    setProgress(0)
+  }
+
+  return { progress, animate, reset }
+}
